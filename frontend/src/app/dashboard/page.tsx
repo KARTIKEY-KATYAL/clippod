@@ -43,7 +43,7 @@ export default async function DashboardPage() {
   const formattedFiles = userData.uploadedFiles.map((file) => ({
     id: file.id,
     s3Key: file.s3Key,
-    filename: file.displayName ?? "Unkown filename",
+    filename: file.displayName ?? file.s3Key.split('/').pop() ?? "Unknown filename", // Better fallback
     status: file.status,
     clipsCount: file._count.clips,
     createdAt: file.createdAt,

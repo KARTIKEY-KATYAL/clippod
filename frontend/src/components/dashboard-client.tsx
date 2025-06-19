@@ -46,6 +46,8 @@ export function DashboardClient({
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<"upload" | "my-clips">("upload");
   const router = useRouter();
 
   const handleRefresh = async () => {
@@ -62,7 +64,25 @@ export function DashboardClient({
     if (files.length === 0) return;
 
     const file = files[0]!;
+
+    // Add file validation
+    if (!file.type.startsWith("video/")) {
+      toast.error("Invalid file type", {
+        description: "Please upload a video file (MP4 recommended).",
+      });
+      return;
+    }
+
+    if (file.size > 500 * 1024 * 1024) {
+      // 500MB limit
+      toast.error("File too large", {
+        description: "Please upload a file smaller than 500MB.",
+      });
+      return;
+    }
+
     setUploading(true);
+    setUploadProgress(0);
 
     try {
       const { success, signedUrl, uploadedFileId } = await generateUploadUrl({
@@ -70,7 +90,9 @@ export function DashboardClient({
         contentType: file.type,
       });
 
-      if (!success) throw new Error("Failed to get upload URL");
+      if (!success || !signedUrl || !uploadedFileId) {
+        throw new Error("Failed to get upload URL");
+      }
 
       const uploadResponse = await fetch(signedUrl, {
         method: "PUT",
@@ -80,8 +102,9 @@ export function DashboardClient({
         },
       });
 
-      if (!uploadResponse.ok)
-        throw new Error(`Upload filed with status: ${uploadResponse.status}`);
+      if (!uploadResponse.ok) {
+        throw new Error(`Upload failed with status: ${uploadResponse.status}`);
+      }
 
       await processVideo(uploadedFileId);
 
@@ -92,10 +115,15 @@ export function DashboardClient({
           "Your video has been scheduled for processing. Check the status below.",
         duration: 5000,
       });
+
+      router.refresh();
     } catch (error) {
+      console.error("Upload error:", error);
       toast.error("Upload failed", {
         description:
-          "There was a problem uploading your video. Please try again.",
+          error instanceof Error
+            ? error.message
+            : "There was a problem uploading your video. Please try again.",
       });
     } finally {
       setUploading(false);
@@ -118,7 +146,10 @@ export function DashboardClient({
         </Link>
       </div>
 
-      <Tabs defaultValue="upload">
+      <Tabs
+        defaultValue="upload"
+        onValueChange={(value) => setActiveTab(value as "upload" | "my-clips")}
+      >
         <TabsList>
           <TabsTrigger value="upload">Upload</TabsTrigger>
           <TabsTrigger value="my-clips">My Clips</TabsTrigger>
@@ -140,25 +171,47 @@ export function DashboardClient({
                 disabled={uploading}
                 maxFiles={1}
               >
-                {(dropzone: DropzoneState) => (
-                  <>
-                    <div className="flex flex-col items-center justify-center space-y-4 rounded-lg p-10 text-center">
+                {(dropzone: DropzoneState) => {
+                  const handleFileSelect = () => {
+                    // Use the traditional file input approach which is more reliable
+                    const input = document.createElement("input");
+                    input.type = "file";
+                    input.accept = "video/mp4";
+                    input.style.display = "none";
+                    input.onchange = (e) => {
+                      const target = e.target as HTMLInputElement;
+                      const files = Array.from(target.files ?? []);
+                      handleDrop(files);
+                      document.body.removeChild(input);
+                    };
+
+                    document.body.appendChild(input);
+                    input.click();
+                  };
+
+                  return (
+                    <div className="flex flex-col items-center justify-center space-y-4 rounded-lg p-10 text-center border-2 border-dashed border-primary/20 hover:border-primary/40 transition-colors">
                       <UploadCloud className="text-muted-foreground h-12 w-12" />
-                      <p className="font-medium">Drag and drop your file</p>
+                      <p className="font-medium">
+                        {dropzone.isDragActive
+                          ? "Drop your file here"
+                          : "Drag and drop your file"}
+                      </p>
                       <p className="text-muted-foreground text-sm">
                         or click to browse (MP4 up to 500MB)
                       </p>
                       <Button
-                        className="cursor-pointer"
+                        type="button"
                         variant="default"
                         size="sm"
                         disabled={uploading}
+                        onClick={handleFileSelect}
                       >
                         Select File
                       </Button>
                     </div>
-                  </>
-                )}
+                  );
+                }}
               </Dropzone>
 
               <div className="mt-2 flex items-start justify-between">
@@ -168,7 +221,7 @@ export function DashboardClient({
                       <p className="font-medium">Selected file:</p>
                       {files.map((file) => (
                         <p key={file.name} className="text-muted-foreground">
-                          {file.name}
+                          {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB)
                         </p>
                       ))}
                     </div>
@@ -189,10 +242,33 @@ export function DashboardClient({
                 </Button>
               </div>
 
+              {uploading && (
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm text-muted-foreground">
+                      Uploading {Math.round((uploadProgress ?? 0) * 100)}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-secondary rounded-full h-2">
+                    <div
+                      className="bg-primary h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(uploadProgress ?? 0) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {uploadedFiles.length > 0 && (
                 <div className="pt-6">
                   <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-md mb-2 font-medium">Queue status</h3>
+                    <h3 className="text-md mb-2 font-medium">
+                      {activeTab === "upload" ? "Upload" : "Gallery"} -{" "}
+                      {activeTab === "upload"
+                        ? uploadedFiles.length ?? 0
+                        : clips.length ?? 0}{" "}
+                      {activeTab === "upload" ? "files" : "clips"}
+                    </h3>
                     <Button
                       variant="outline"
                       size="sm"
@@ -222,24 +298,26 @@ export function DashboardClient({
                               {item.filename}
                             </TableCell>
                             <TableCell className="text-muted-foreground text-sm">
-                              {new Date(item.createdAt).toLocaleDateString()}
+                              {new Date(item.createdAt).toLocaleDateString("en-GB", {
+                                day: "2-digit",
+                                month: "2-digit",
+                                year: "numeric",
+                              })}
                             </TableCell>
                             <TableCell>
-                              {item.status === "queued" && (
-                                <Badge variant="outline">Queued</Badge>
-                              )}
-                              {item.status === "processing" && (
-                                <Badge variant="outline">Processing</Badge>
-                              )}
-                              {item.status === "processed" && (
-                                <Badge variant="outline">Processed</Badge>
-                              )}
-                              {item.status === "no credits" && (
-                                <Badge variant="destructive">No credits</Badge>
-                              )}
-                              {item.status === "failed" && (
-                                <Badge variant="destructive">Failed</Badge>
-                              )}
+                              <Badge
+                                variant={
+                                  item.status === "COMPLETED"
+                                    ? "default"
+                                    : item.status === "PROCESSING"
+                                    ? "secondary"
+                                    : "destructive"
+                                }
+                              >
+                                {item.status === "COMPLETED"
+                                  ? `${item.clipsCount ?? 0} clips`
+                                  : item.status}
+                              </Badge>
                             </TableCell>
                             <TableCell>
                               {item.clipsCount > 0 ? (
@@ -270,7 +348,7 @@ export function DashboardClient({
               <CardTitle>My Clips</CardTitle>
               <CardDescription>
                 View and manage your generated clips here. Processing may take a
-                few minuntes.
+                few minutes.
               </CardDescription>
             </CardHeader>
             <CardContent>

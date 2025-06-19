@@ -49,23 +49,33 @@ export const processVideo = inngest.createFunction(
       if (credits > 0) {
         await step.run("set-status-processing", async () => {
           await db.uploadedFile.update({
-            where: {
-              id: uploadedFileId,
-            },
-            data: {
-              status: "processing",
-            },
+            where: { id: uploadedFileId },
+            data: { status: "processing" },
           });
         });
 
-        await step.fetch(env.PROCESS_VIDEO_ENDPOINT, {
-          method: "POST",
-          body: JSON.stringify({ s3_key: s3Key }),
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${env.PROCESS_VIDEO_ENDPOINT_AUTH}`,
-          },
-        });
+        try {
+          const videoUrl = `https://${env.S3_BUCKET_NAME}.s3.${env.AWS_REGION}.amazonaws.com/${s3Key}`;
+          const response = await fetch(videoUrl);
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Backend processing failed: ${response.status} - ${errorText}`);
+          }
+
+          const body = await response.json() as { videoData: unknown };
+          console.log("Processing response:", body);
+          
+        } catch (error) {
+          console.error("Processing error:", error);
+          await step.run("set-status-failed", async () => {
+            await db.uploadedFile.update({
+              where: { id: uploadedFileId },
+              data: { status: "failed" },
+            });
+          });
+          throw error;
+        }
 
         const { clipsFound } = await step.run(
           "create-clips-in-db",
@@ -128,15 +138,9 @@ export const processVideo = inngest.createFunction(
           });
         });
       }
-    } catch (error: unknown) {
-      await db.uploadedFile.update({
-        where: {
-          id: uploadedFileId,
-        },
-        data: {
-          status: "failed",
-        },
-      });
+    } catch {
+      console.error("Failed to process video");
+      return { success: false };
     }
   },
 );
